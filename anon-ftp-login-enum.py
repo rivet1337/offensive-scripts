@@ -10,7 +10,6 @@ import socket
 import random
 import threading
 from optparse import OptionParser
-from typing import Counter
 
 
 def FTPAnonLogin(host, logfile, verbose):
@@ -24,16 +23,21 @@ def FTPAnonLogin(host, logfile, verbose):
     try:
         ftp=ftplib.FTP(host)
     except Exception as e:
-        if verbose:
-                print("[-] %s Error: %s"%(host, e))
-        if logfile:
-                logfile.write("[-] %s Error: %s\n"%(host, e))
+        if e.errno==60:
+            if verbose:
+                print("[-] ERROR: Connection timed out for %s"%host)
+            if logfile:
+                logfile.write("[-] %s Connection timed out for %s\n"%host)
+        else:
+            if verbose:
+                print("[-] ERROR: Bad IP address (%s)"%host)
+            if logfile:
+                logfile.write("[-] ERROR: Bad IP address (%s)\n"%host)
         return
     
     try:  
         ftp.login()
-        if verbose:
-            print("[+] Anonymous FTP login successful on %s"%host)
+        print("[+] Anonymous FTP login successful on %s"%host)
         if logfile:
             logfile.write("[+] Anonymous FTP login successful on %s\n"%host)
         ftp.quit()
@@ -68,6 +72,8 @@ def main():
                       help="Timeout in seconds")
     parser.add_option("-m", "--maxthread", dest="max", type="int",\
                       help="Maximum thread number")
+    parser.add_option("-r", "--remote", dest="target", type="string",\
+                        help="Targeted host to scan")
 
     (options, args)= parser.parse_args()
     """ parse options"""
@@ -93,12 +99,16 @@ def main():
     else:
         timeout=5
     if options.max:
-        max=options.max
+        tmax=options.max
     else:
-        max=10
+        tmax=10
+    if options.target:
+        target=options.target
+        nhost=1
+    else:
+        target=None
 
 
-    tmax=max
 
     nthreads=threading.activeCount() # get initial number of running threads
     socket.setdefaulttimeout(options.timeout) # set timeout
@@ -109,7 +119,10 @@ def main():
 
 
     for i in range(nhost):
-        host=randomHost()
+        if target:
+            host=target
+        else:   
+            host=randomHost()
         
         try:
             while threading.activeCount()>tmax: # wait for threads to finish
