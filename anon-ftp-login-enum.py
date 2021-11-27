@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-""" Anonymous FTP Login Scanner v0.1     """        
+""" Anonymous FTP Login Scanner v0.3     """        
 
 
 import ftplib
@@ -9,6 +9,8 @@ import datetime
 import socket
 import random
 import threading
+import ipaddress
+import re
 from optparse import OptionParser
 
 
@@ -23,16 +25,12 @@ def FTPAnonLogin(host, logfile, verbose):
     try:
         ftp=ftplib.FTP(host)
     except Exception as e:
-        if e.errno==60:
-            if verbose:
-                print("[-] ERROR: Connection timed out for %s"%host)
-            if logfile:
-                logfile.write("[-] %s Connection timed out for %s\n"%host)
-        else:
-            if verbose:
-                print("[-] ERROR: Bad IP address (%s)"%host)
-            if logfile:
-                logfile.write("[-] ERROR: Bad IP address (%s)\n"%host)
+
+        if verbose:
+            e2=re.sub("\[.*\] ","",str(e))
+            print("[-] ERROR: %s (%s)"%(e2, host))
+        if logfile:
+            logfile.write("[-] ERROR: %s (%s)\n"%(e2, host))
         return
     
     try:  
@@ -40,12 +38,36 @@ def FTPAnonLogin(host, logfile, verbose):
         print("[+] Anonymous FTP login successful on %s"%host)
         if logfile:
             logfile.write("[+] Anonymous FTP login successful on %s\n"%host)
-        ftp.quit()
+        
     except:
         if verbose:
             print("[-] Anonymous FTP login failed on %s"%host)
         if logfile:
             logfile.write("[-] Anonymous FTP login failed on %s\n"%host)
+        #ftp.quit()    
+        return
+    
+    try:
+        
+        if verbose or logfile:
+            fptdirlist = []
+            ftpdirlist = ftp.nlst()
+            for dir in ftpdirlist:
+                if verbose:
+                    print("[+] Found directory [ %s ] on %s"%(dir, host))
+                if logfile:
+                    logfile.write("[+] %s: Found directory [ %s ] on %s\n"%(dir, host))
+        ftp.quit()
+
+        
+        
+    except:
+        if verbose:
+            print("[-] Directory listing failed on %s"%host)
+        if logfile:
+            logfile.write("[-] Directory listing failed on %s\n"%host)
+        ftp.quit()
+        return
     
     
 
@@ -85,7 +107,7 @@ def main():
         global logfile
         logfile=open(options.oFile, "w")
         ctime=str(datetime.datetime.now()) # returns "yy-mm-dd hh:mm:ss.xx
-        ctime=ctime[:ctime.index(".")]
+        ctime=ctime[:ctime.index(".")] # remove the microseconds
         logfile.write("\nScan time: %s\n"%ctime)
    
     else:
@@ -104,26 +126,34 @@ def main():
         tmax=10
     if options.target:
         target=options.target
-        nhost=1
+        ip_list=[]
+        try:
+            ip_list=list(ipaddress.ip_network(target, False).hosts())
+        except Exception as e:
+            print("[-] ERROR: Bad IP address (%s)"%target)
+            if logfile:
+                logfile.write("[-] ERROR: Bad IP address (%s)\n"%target)
+            exit(1)
+        nhost=len(ip_list)
     else:
         target=None
 
 
-
     nthreads=threading.activeCount() # get initial number of running threads
-    socket.setdefaulttimeout(options.timeout) # set timeout
+    socket.setdefaulttimeout(timeout) # set timeout
 
     print("[+] Starting scan...")
     if logfile:
         logfile.write("[+] Starting scan...\n")
 
 
+
     for i in range(nhost):
         if target:
-            host=target
-        else:   
+            host=str(ip_list[i])
+        else:
             host=randomHost()
-        
+
         try:
             while threading.activeCount()>tmax: # wait for threads to finish
                 time.sleep(10)
