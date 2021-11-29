@@ -3,7 +3,6 @@
 """ Port Scanner v0.1     """        
 
 
-import ftplib
 import time
 import datetime
 import socket
