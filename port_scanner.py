@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-""" Anonymous FTP Login Scanner v0.3     """        
+""" Port Scanner v0.1     """        
 
 
 import ftplib
