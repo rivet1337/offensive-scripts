@@ -56,12 +56,13 @@ def FTPAnonLogin(host, logfile, verbose):
                 if verbose:
                     print("[+] Found directory [ %s ] on %s"%(dir, host))
                 if logfile:
-                    logfile.write("[+] %s: Found directory [ %s ] on %s\n"%(dir, host))
+                    logfile.write("[+] Found directory [ %s ] on %s\n"%(dir, host))
         ftp.quit()
 
         
         
-    except:
+    except Exception as e:
+        print(e)
         if verbose:
             print("[-] Directory listing failed on %s"%host)
         if logfile:
