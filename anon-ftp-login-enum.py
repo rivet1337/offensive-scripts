@@ -25,9 +25,9 @@ def FTPAnonLogin(host, logfile, verbose):
     try:
         ftp=ftplib.FTP(host)
     except Exception as e:
-
+        
+        e2=re.sub("\[.*\] ","",str(e))
         if verbose:
-            e2=re.sub("\[.*\] ","",str(e))
             print("[-] ERROR: %s (%s)"%(e2, host))
         if logfile:
             logfile.write("[-] ERROR: %s (%s)\n"%(e2, host))
@@ -81,7 +81,8 @@ def randomHost():
 
 
 def main():
-    
+    ctime=datetime.datetime.now() # returns "yy-mm-dd hh:mm:ss.xx"
+ 
     parser=OptionParser() # Parser for command line arguments
     parser.add_option("-n", dest="nhost", type="int",\
                       help="Number of hosts", metavar="nHost")
@@ -106,8 +107,6 @@ def main():
     if options.oFile: 
         global logfile
         logfile=open(options.oFile, "w")
-        ctime=str(datetime.datetime.now()) # returns "yy-mm-dd hh:mm:ss.xx
-        ctime=ctime[:ctime.index(".")] # remove the microseconds
         logfile.write("\nScan time: %s\n"%ctime)
    
     else:
@@ -167,9 +166,13 @@ def main():
                 logfile.write("[-] Error: %s\n"%e)
     while threading.activeCount()>1:
         time.sleep(10)
-    print("[+] Scan completed")
+    
+    etime=datetime.datetime.now() # returns "yy-mm-dd hh:mm:ss.xx
+    total =  etime - ctime
+
+    print("[+] Scan completed in: %s"%str(total)[:str(total).index(".")])
     if logfile:
-        logfile.write("[+] Scan completed\n")
+        logfile.write("[+] Scan completed in: %s"%str(total)[:str(total).index(".")])
     if logfile:
         logfile.close()
     while threading.activeCount()>nthreads: 
@@ -179,3 +182,7 @@ def main():
 
 if __name__=="__main__":
     main()
+
+   
+   
+
