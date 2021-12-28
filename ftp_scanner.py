@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-""" Anonymous FTP Login Scanner v0.3     """        
+""" Anonymous FTP Login Scanner  """        
 
 
 import ftplib
@@ -10,66 +10,74 @@ import socket
 import random
 import threading
 import ipaddress
-import re
-from optparse import OptionParser
+import signal
+from typing import DefaultDict
+import prettyprint as pp
+from optparse import OptionParser, OptionGroup
+import concurrent.futures
+import ipmagic
 
 
-def FTPAnonLogin(host, logfile, verbose):
-    """ Anonymous FTP login """
+def signal_handler(signal, frame):
+		pp.error('System Interupt requested, attempting to exit cleanly!')
+		exit(1)
 
-    if verbose:
-        print("[+] Testing %s"%host)
-    if logfile:
-        logfile.write("[+] Testing %s\n"%host)
+signal.signal(signal.SIGINT, signal_handler)
 
+
+
+def FTPBruteForce(host,userlist, passwordlist):
+    """ Bruteforce FTP login """
+
+    err = []
+    out = []
+    verb = []
+    warn = []
+    description = ["ASN Info: " + ipmagic.get_asn_info(host), "ASN CIDR: " + ipmagic.get_asn_cidr(host)]
+
+    verb.append("Performing FTP bruteforce login on %s"%host)
+
+    if not userlist:
+        userlist=["test", "anonymous"]
+    if not passwordlist:
+        passwordlist=["anonymous@","test"]
+
+    #check that port 21 on host is open
+    s=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        ftp=ftplib.FTP(host)
+        s.connect((host, 21))
+        banner = s.recv(1024).strip().decode('utf-8').lower()
+        s.close()
+        if "220" not in banner:
+            err.append("Bad response from %s, aborting!"%host)
+            return (err, out, verb, warn, description)
     except Exception as e:
-        
-        e2=re.sub("\[.*\] ","",str(e))
-        if verbose:
-            print("[-] ERROR: %s (%s)"%(e2, host))
-        if logfile:
-            logfile.write("[-] ERROR: %s (%s)\n"%(e2, host))
-        return
-    
-    try:  
-        ftp.login()
-        print("[+] Anonymous FTP login successful on %s"%host)
-        if logfile:
-            logfile.write("[+] Anonymous FTP login successful on %s\n"%host)
-        
-    except:
-        if verbose:
-            print("[-] Anonymous FTP login failed on %s"%host)
-        if logfile:
-            logfile.write("[-] Anonymous FTP login failed on %s\n"%host)
-        #ftp.quit()    
-        return
-    
-    try:
-        
-        if verbose or logfile:
-            fptdirlist = []
-            ftpdirlist = ftp.nlst()
-            for dir in ftpdirlist:
-                if verbose:
-                    print("[+] Found directory [ %s ] on %s"%(dir, host))
-                if logfile:
-                    logfile.write("[+] Found directory [ %s ] on %s\n"%(dir, host))
-        ftp.quit()
+        err.append("FTP is not available on %s (%s)"%(host,e))
+        return (err, out, verb, warn, description)
 
-        
-        
-    except Exception as e:
-        print(e)
-        if verbose:
-            print("[-] Directory listing failed on %s"%host)
-        if logfile:
-            logfile.write("[-] Directory listing failed on %s\n"%host)
-        ftp.quit()
-        return
     
+
+    for username in userlist:
+        for password in passwordlist:
+            try:
+                ftp=ftplib.FTP(host)
+                ftp.login(user=username, passwd=password)
+                out.append("FTP login successful on %s (%s:%s) [%s]"%(host, username, password, ftp.getwelcome()))
+
+                if dirlist:
+                    for line in ftp.nlst():
+                        verb.append("Found directory [ %s ] on %s"%(line, host))
+                    
+                ftp.quit()
+                return (err,out,verb,warn, description)
+
+            except Exception as e:
+                warn.append("FTP login failed on %s (%s:%s) [%s]"%(host, username, password, e))
+                ftp.quit()
+    return (err,out,verb,warn, description)
+
+
+
     
 
 def randomHost():
@@ -84,7 +92,7 @@ def randomHost():
 def main():
     ctime=datetime.datetime.now() # returns "yy-mm-dd hh:mm:ss.xx"
  
-    parser=OptionParser() # Parser for command line arguments
+    parser=OptionParser(version="4.0") # Parser for command line arguments
     parser.add_option("-n", dest="nhost", type="int",\
                       help="Number of hosts", metavar="nHost")
     parser.add_option("-o", "--output", dest="oFile", type="string",\
@@ -98,6 +106,16 @@ def main():
                       help="Maximum thread number")
     parser.add_option("-r", "--remote", dest="target", type="string",\
                         help="Targeted host to scan")
+    parser.add_option("-U", "--userlist", dest="userlist", type="string",\
+                        help="List of users to check")
+    parser.add_option("-P", "--passlist", dest="passlist", type="string",\
+                        help="List of passwords to check")
+
+
+    group = OptionGroup(parser, "Post-authentication checks",
+                    "Checks that take place after a successful authentication.")
+    group.add_option("-d", "--dir-list", action="store_true", dest="dirlist", help="List directories")
+    parser.add_option_group(group)
 
     (options, args)= parser.parse_args()
     """ parse options"""
@@ -107,8 +125,8 @@ def main():
         nhost=10
     if options.oFile: 
         global logfile
-        logfile=open(options.oFile, "w")
-        logfile.write("\nScan time: %s\n"%ctime)
+        logfile = options.oFile
+        pp.log_status("Scan started at: %s"%ctime, logfile)
    
     else:
         logfile=None
@@ -124,60 +142,104 @@ def main():
         tmax=options.max
     else:
         tmax=10
-    if options.target:
-        target=options.target
-        ip_list=[]
-        try:
-            ip_list=list(ipaddress.ip_network(target, False).hosts())
-        except Exception as e:
-            print("[-] ERROR: Bad IP address (%s)"%target)
-            if logfile:
-                logfile.write("[-] ERROR: Bad IP address (%s)\n"%target)
-            exit(1)
-        nhost=len(ip_list)
+    
+    if options.userlist:
+        userlist=[line.rstrip() for line in open(options.userlist)]
     else:
-        target=None
+        userlist=None
 
+    if options.passlist:
+        passwordlist=[line.rstrip() for line in open(options.passlist)]
+    else:
+        passwordlist=None
+
+    if options.dirlist:
+        global dirlist
+        dirlist=True
+    else:
+        dirlist=False
+    
+    try:
+        ip_list=[]
+        if options.target:
+            target=options.target
+            
+            ip_list=list(ipaddress.ip_network(target, False).hosts())
+            nhost=len(ip_list)
+        else:
+            for _ in range(nhost):
+                ip_list.append(ipaddress.ip_address(randomHost()))
+
+
+    except Exception as e:
+        pp.error("Bad IP address (%s)"%target)
+        if logfile:
+            pp.log_error("Bad IP address (%s)"%target, logfile)
+        exit(1)
 
     nthreads=threading.activeCount() # get initial number of running threads
     socket.setdefaulttimeout(timeout) # set timeout
 
-    print("[+] Starting scan...")
+    pp.status("Starting scan...")
     if logfile:
-        logfile.write("[+] Starting scan...\n")
+        pp.log_status("Starting scan...", logfile)
 
-
-
-    for i in range(nhost):
-        if target:
-            host=str(ip_list[i])
-        else:
-            host=randomHost()
-
-        try:
-            while threading.activeCount()>tmax: # wait for threads to finish
-                time.sleep(10)
-            t=threading.Thread(target=FTPAnonLogin, args=(host, logfile, verbose)) # create thread
-            t.start()
-     
-        except Exception as e:
-            if verbose:
-                print("[-] Error: %s"%e) 
-            if logfile:
-                logfile.write("[-] Error: %s\n"%e)
-    while threading.activeCount()>1:
-        time.sleep(10)
     
+    with concurrent.futures.ThreadPoolExecutor(max_workers=tmax) as executor:
+        results = [executor.submit(FTPBruteForce, str(ip),userlist, passwordlist) for ip in ip_list]
+        for f in concurrent.futures.as_completed(results):
+            err,out,verb,warn, description = f.result()
+
+            
+            for v in verb:
+                if verbose:
+                    pp.info(v)
+                if logfile:
+                    pp.log_info(v, logfile)            
+            
+            for d in description:
+                if verbose:
+                    pp.info(d)
+                if logfile:
+                    pp.log_info(d, logfile)
+
+            for o in out:
+                pp.status(o)
+                if logfile:
+                    pp.log_status(o, logfile)
+            
+
+            for e in err:
+                if verbose:
+                    pp.error(e)
+                if logfile:
+                    pp.log_error(e, logfile)
+                
+            for w in warn:
+                if verbose:
+                    pp.warning(w)
+                if logfile:
+                    pp.log_warning(w, logfile)
+
+
+                
+
     etime=datetime.datetime.now() # returns "yy-mm-dd hh:mm:ss.xx
     total =  etime - ctime
 
-    print("[+] Scan completed in: %s"%str(total)[:str(total).index(".")])
+    tcount=0
+    while threading.activeCount()>nthreads:
+        if tcount == 0:
+            pp.info("Waiting for threads to finish...")
+            tcount=1
+        else:
+            pp.info_spaces("Still %s/%d threads running..."%((threading.activeCount()-1),tmax))
+            time.sleep(1)                      # wait for all threads to finish
+
+    pp.status("Scan completed in: %s"%str(total)[:str(total).index(".")])
     if logfile:
-        logfile.write("[+] Scan completed in: %s"%str(total)[:str(total).index(".")])
-    if logfile:
-        logfile.close()
-    while threading.activeCount()>nthreads: 
-        time.sleep(10)                      # wait for all threads to finish
+        pp.log_status("Scan completed in: %s"%str(total)[:str(total).index(".")], logfile)
+
 
 
 
