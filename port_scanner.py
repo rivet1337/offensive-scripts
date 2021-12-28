@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-""" Port Scanner v0.1     """        
+""" Port Scanner v4     """        
 
 
 import time
@@ -12,33 +12,61 @@ import ipaddress
 import re
 from optparse import OptionParser
 import ftp_scanner
+import ssh_scanner
+import prettyprint as pp
+import concurrent.futures
 
 
-def portscan(host, logfile, verbose, ports):
+def portscan(host, ports):
     """ Scan specified ports """
+
+    err = []
+    out = []
+    verb = []
+    warn = []
+
+    verb.append("Starting portscan on %s"%host)
+
     for port in ports:
         try:
             s=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect((host, port))
+            banner = s.recv(1024).strip().decode('utf-8')[0:100]
             s.close()
-            print("[+] %s:%s OPEN"%(host, port))
-            if logfile:
-                logfile.write("[+] %s:%s OPEN\n"%(host, port))
-            
+            out.append("%s:%s OPEN"%(host, port))
+            verb.append("%s:%s Banner: %s"%(host, port, banner))
+
             if port == 21:
-                ftp_scanner.FTPAnonLogin(host,logfile, verbose)
+               ftp_results = ftp_scanner.FTPBruteForce(host, None, None)
+               ftp_err, ftp_out, ftp_verb, ftp_warn = ftp_results
+               if len(ftp_out) > 0:
+                   out.append(ftp_out[0])
+               
+            if port == 22:
+               ssh_results = ssh_scanner.SSHBruteForce(host, None, None)
+               ssh_err, ssh_out, ssh_verb, ssh_warn = ssh_results
+               if len(ssh_out) > 0:
+                     out.append(ssh_out[0])
                 
         except Exception as e:
-            if verbose:
-                print("[-] %s:%s CLOSED"%(host, port))
-            if logfile:
-                logfile.write("[-] %s:%s CLOSED\n"%(host, port))
+            verb.append("%s:%s CLOSED (%s)"%(host, port, e))
+            #return (err, out, verb, warn)
+    return (err, out, verb, warn)
 
+def randomHost():
+    """ Generates a random IP address """
+    host=str(random.randint(1,254))
+    host+="."+str(random.randint(0,255))
+    host+="."+str(random.randint(0,255))
+    host+="."+str(random.randint(0,254))
+    return host
 
 def main():
     ctime=datetime.datetime.now() # returns "yy-mm-dd hh:mm:ss.xx"
  
-    parser=OptionParser() # Parser for command line arguments
+    parser=OptionParser(version="%prog 4.0") # Parser for command line arguments
+    parser.add_option("-n", dest="nhost", type="int",\
+                      help="Number of hosts", metavar="nHost")
     parser.add_option("-p", dest="ports", type="string",\
                       help="Ports to scan (e.g. \"-p20,21,80,443 or -p20-25\")")
     parser.add_option("-o", "--output", dest="oFile", type="string",\
@@ -46,7 +74,7 @@ def main():
     parser.add_option("-v", "--verbose", dest="verbose", default=False,\
                       action="store_true",\
                       help="Verbose output")
-    parser.add_option("--timeout", dest="timeout", type="float",\
+    parser.add_option("-t", "--timeout", dest="timeout", type="float",\
                       help="Timeout in seconds")
     parser.add_option("-m", "--maxthread", dest="max", type="int",\
                       help="Maximum thread number")
@@ -55,6 +83,12 @@ def main():
 
     (options, args)= parser.parse_args()
     """ parse options"""
+
+    if options.nhost:
+        nhost=options.nhost
+    else:   
+        nhost=10
+
     if options.ports:
         try:
             if "," in options.ports:
@@ -73,12 +107,12 @@ def main():
     else:   
         ports=[21, 22, 23, 25, 80, 110, 139, 443, 445, 3306, 3389, 8080]
 
-    nhost=10
+    
 
     if options.oFile: 
         global logfile
-        logfile=open(options.oFile, "w")
-        logfile.write("\nScan time: %s\n"%ctime)
+        logfile = options.oFile
+        pp.log_status("Scan started at: %s"%ctime, logfile)
    
     else:
         logfile=None
@@ -89,66 +123,87 @@ def main():
     if options.timeout:
         timeout=options.timeout
     else:
-        timeout=5
+        timeout=20
     if options.max:
         tmax=options.max
     else:
         tmax=10
-    if options.target:
-        target=options.target
+    
+    try:
         ip_list=[]
-        try:
+        if options.target:
+            target=options.target
+            
             ip_list=list(ipaddress.ip_network(target, False).hosts())
-        except Exception as e:
-            print("[-] ERROR: Bad IP address (%s)"%target)
-            if logfile:
-                logfile.write("[-] ERROR: Bad IP address (%s)\n"%target)
-            exit(1)
-        nhost=len(ip_list)
-    else:
-        target=None
+            nhost=len(ip_list)
+        else:
+            for _ in range(nhost):
+                ip_list.append(ipaddress.ip_address(randomHost()))
+    
+    except Exception as e:
+        pp.error("Bad IP address (%s)"%target)
+        if logfile:
+            pp.log_error("Bad IP address (%s)"%target, logfile)
+        exit(1)
 
 
     nthreads=threading.activeCount() # get initial number of running threads
     socket.setdefaulttimeout(timeout) # set timeout
 
-    print("[+] Starting scan...")
+    pp.status("Starting scan...")
     if logfile:
-        logfile.write("[+] Starting scan...\n")
-
-
-
-    for i in range(nhost):
-        if target:
-            host=str(ip_list[i])
-        else:
-            print("[-] ERROR: No target specified")
-            exit(1)
-
-        try:
-            while threading.activeCount()>tmax: # wait for threads to finish
-                time.sleep(10)
-            t=threading.Thread(target=portscan, args=(host, logfile, verbose, ports)) # create thread
-            t.start()
-     
-        except Exception as e:
-            if verbose:
-                print("[-] Error: %s"%e) 
-            if logfile:
-                logfile.write("[-] Error: %s\n"%e)
-    while threading.activeCount()>1:
-        time.sleep(10)
+        pp.log_status("Starting scan...", logfile)
     
+    with concurrent.futures.ThreadPoolExecutor(max_workers=tmax) as executor:
+        results = [executor.submit(portscan, str(ip), ports) for ip in ip_list]
+        
+        for f in concurrent.futures.as_completed(results):
+            err,out,verb,warn = f.result()
+            
+            for v in verb:
+                if verbose:
+                    pp.info(v)
+                if logfile:
+                    pp.log_info(v, logfile)
+
+            for o in out:
+                pp.status(o)
+                if logfile:
+                    pp.log_status(o, logfile)
+            
+
+            for e in err:
+                if verbose:
+                    pp.error(e)
+                if logfile:
+                    pp.log_error(e, logfile)
+                
+            for w in warn:
+                if verbose:
+                    pp.warning(w)
+                if logfile:
+                    pp.log_warning(w, logfile)
+
+
+
     etime=datetime.datetime.now() # returns "yy-mm-dd hh:mm:ss.xx
     total =  etime - ctime
 
-    print("[+] Scan completed in: %s"%str(total)[:str(total).index(".")])
+    tcount=0
+    while threading.activeCount()>nthreads:
+        if tcount == 0:
+            pp.info("Waiting for threads to finish...")
+            tcount=1
+        else:
+            pp.info_spaces("Still %s/%d threads running..."%((threading.activeCount()-1),tmax))
+            time.sleep(1)                      # wait for all threads to finish
+
+    pp.status("Scan completed in: %s"%str(total)[:str(total).index(".")])
     if logfile:
-        logfile.write("[+] Scan completed in: %s"%str(total)[:str(total).index(".")])
-    if logfile:
-        logfile.close()
-    while threading.activeCount()>nthreads: 
-        time.sleep(10)                      # wait for all threads to finish
+        pp.log_status("Scan completed in: %s"%str(total)[:str(total).index(".")], logfile)
+
+
+
 
 
 
