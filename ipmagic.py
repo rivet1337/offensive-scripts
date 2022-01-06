@@ -39,7 +39,7 @@ def ip2ASN(ip):
 
 def get_asn_info(ip):
     asn, asn_cidr, asn_description, nets_cidr, nets_name, nets_description = ip2ASN(ip)
-    return nets_description
+    return asn_description
 
 def get_asn_cidr(ip):
     asn, asn_cidr, asn_description, nets_cidr, nets_name, nets_description = ip2ASN(ip)
