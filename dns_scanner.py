@@ -5,8 +5,6 @@
     2. IP address
     3. ASN CIDR
     4. ASN Description
-    
-    STILL HEAVILY UNFINISHED WIP!!!
 '''
 
 from optparse import OptionParser, OptionGroup
@@ -52,21 +50,25 @@ def check_cidr(inception_cidr, domain, aliases):
     
     inception_ips=ipaddress.ip_network(inception_cidr).hosts()
     #turn the IP into a domain
-    valid_inception_domains=[]
+    #valid_inception_domains=[]
+    valid_inception_domains={}
     for inception_ip in inception_ips:
         try:
             inception_domain=socket.gethostbyaddr(str(inception_ip))[0]
 
             if domain in inception_domain:
-                valid_inception_domains.append(inception_domain)
+                #valid_inception_domains.append(inception_domain)
+                valid_inception_domains[inception_domain]=inception_ip
             for alias in aliases:
                 if alias in inception_domain:
-                    valid_inception_domains.append(inception_domain)
+                    #valid_inception_domains.append(inception_domain)
+                    valid_inception_domains[inception_domain]=inception_ip
         except:
             pass
 
 
-    return set(valid_inception_domains)
+    #return set(valid_inception_domains)
+    return valid_inception_domains
 
 
 
@@ -94,31 +96,29 @@ def main():
                       action="store_true", help="Verbose output")
 
 
-    group = OptionGroup(parser, "Advanced checks",
-                    "Extra options for advanced users")
+    group = OptionGroup(parser, "Advanced options")
 
     group.add_option( "--ipwhois", action="store_true", dest="ipwhois", 
                     help="Perform an IP whois lookup")
     group.add_option("--timeout", dest="timeout", type="float",
-                      help="Timeout in seconds")
+                      help="Socket timeout in seconds")
     group.add_option("--maxthread", dest="max", type="int",
                       help="Maximum thread count")
 
 
     group1 = OptionGroup(parser, "Using inception & aliases",
-                    "Inception is useful to check if the identified CIDR of an identified subdomain contains any further subdomains of interest."
-                    " When doing an inception search it's possible to identify other TLDs used by the same company as some companies"
-                    " use aliases for their domains. This will allow you to use the alias instead of their defined domain "
-                    " to identify more valid subdomains."
+                    "Inception is simply a recursive reverse DNS lookup of the subnets (CIDRs) from the domains identified via the wordlist."
+                    " Some companies use aliases when creating domain names. For example Google uses google.com but also googledomains.com, "
+                    "google-access.net, .google (TLD), 1e100.net, etc."
+                    " Using --aliases allows you to widen the reverse DNS lookup via --inception. Otherwise strictly only the domain name is used for reverse lookup."
                     " Aliases are incomaptible with --domain-list."
-                    " The main differnce between using a domain or using an alias is that aliases are only used inside inception checks."
-                    " This is very much an edge case, but it can be useful."
+                    " Aliases require and assume --ipwhois and --inception."
                     " e.g. -d google.com --inception --aliases=1e100.net,google")
     
     group1.add_option("--inception", dest="inception", action="store_true", 
-                    help="Recursive subdomain enumeration based on identified CIDRs")
-    group1.add_option("--aliases", dest="aliases", help="Comma separated list of aliases to use as well as the full domain", metavar="ALIASES")
-    group1.add_option("--nameserver", dest="nameserver", help="IP address of a nameserver (otherwise 8.8.8.8 will be used)", metavar="NAMESERVER")
+                    help="Recursive subdomain enumeration using identified CIDRs")
+    group1.add_option("--aliases", dest="aliases", help="Comma separated list of aliases to use", metavar="ALIASES")
+    group1.add_option("--nameserver", dest="nameserver", help="IP address of a nameserver (default: 8.8.8.8)", metavar="NAMESERVER")
 
 
     parser.add_option_group(group)
@@ -130,13 +130,13 @@ def main():
     if options.output:
         if options.output == '-':
             logfile = sys.stderr
-            fieldnames = ['DOMAIN', 'IP', 'ASN_CIDR', 'ASN_DESCRIPTION']
+            fieldnames = ['FQDN', 'IP', 'ASN_CIDR', 'ASN_DESCRIPTION', 'METHOD']
             logfile.writer = csv.DictWriter(logfile, delimiter=',',
                                     quotechar='"', quoting=csv.QUOTE_ALL,fieldnames=fieldnames)
         else:     
             ''' write the results to a CSV'''
             logfile = open(options.output, 'w')
-            fieldnames = ['DOMAIN', 'IP', 'ASN_CIDR', 'ASN_DESCRIPTION']
+            fieldnames = ['FQDN', 'IP', 'ASN_CIDR', 'ASN_DESCRIPTION', 'METHOD']
             logfile.writer = csv.DictWriter(logfile, delimiter=',',
                                     quotechar='"', quoting=csv.QUOTE_ALL,fieldnames=fieldnames)
             logfile.writer.writeheader()
@@ -191,8 +191,8 @@ def main():
             parser.error("Domain not specified")
     
     except Exception as e:
-        pp.error("Bad domain (%s)"%target)
-        exit(1)  
+        parser.error("%s (%s)"%(e, target))
+
     
     if options.aliases and options.domain_list:
         parser.error("--aliases is not compatible with --domain-list")
@@ -206,10 +206,17 @@ def main():
     global dns_resolver
     dns_resolver = dns.resolver.Resolver(configure=False)
     dns_resolver.timeout = timeout
-    if options.nameserver:
-        dns_resolver.nameservers = [options.nameserver]
-    else:
-        dns_resolver.nameservers = ['8.8.8.8']
+    try:
+        if options.nameserver:
+                if is_ip_address(options.nameserver):
+                    dns_resolver.nameservers = [options.nameserver]
+                else:
+                    raise Exception("Nameserver is not an IP address")          
+        else:
+            dns_resolver.nameservers = ['8.8.8.8']
+    except Exception as e:
+        parser.error("%s (%s)"%(e, options.nameserver))
+
     nthreads=threading.activeCount() # get initial number of running threads
     socket.setdefaulttimeout(timeout) # set timeout
 
@@ -221,7 +228,8 @@ def main():
     if wordlist_file:
         wordlist=[line.rstrip() for line in open(wordlist_file)]
     else:
-        wordlist=["test", "www"]
+        wordlist=["ns", "ns1", "ns2", "ns3", "ns4", "dns", "www", "www2", "time", "whois", "mail", 
+        "host", "dev", "test", "web", "webmail", "backup", "direct", "ftp", "secure", "imap", "pop", "smtp", "proxy", "local"]
 
     for domain in domain_list:
         pp.status("Scanning %s"%domain)
@@ -235,10 +243,15 @@ def main():
                     continue
                 
                 pp.info("Subdomain: %s (%s)"%(full_domain, ", ".join(ips)))
+
                 
                 for ip in ips:
-                    if ipmagic.get_asn_cidr(ip) != '':
-                        inception_list.append(ipmagic.get_asn_cidr(ip))
+                    ip_cidr = ipmagic.get_asn_cidr(ip)
+                    if ip_cidr != '':
+                        inception_list.append(ip_cidr)
+                        if logfile:
+                            logfile.writer.writerow({'FQDN':full_domain, 'IP':ip, 'ASN_CIDR':ip_cidr, 'ASN_DESCRIPTION':ipmagic.get_asn_info(ip.rsplit('/', 1)[0]), 'METHOD':'wordlist'})
+
 
 
     
@@ -250,16 +263,23 @@ def main():
     
                         
 
-        if inception:
-            print("\n")
-            pp.status("Inception checks for %s"%domain)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=tmax) as executor:
-                results = [executor.submit(check_cidr, inception_cidr, domain, aliases) for inception_cidr in set(inception_list)]
-                for f in concurrent.futures.as_completed(results):
-                    full_domain_list = f.result()
-                    for domain_name in full_domain_list:
-                        pp.info("Subdomain: %s (%s)"%(domain_name,socket.gethostbyname(domain_name)))
-                    
+    if inception:
+        print("\n")
+        pp.status("Inception checks for %s"%domain)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=tmax) as executor:
+            results = [executor.submit(check_cidr, inception_cidr, domain, aliases) for inception_cidr in set(inception_list)]
+            for f in concurrent.futures.as_completed(results):
+                full_domain_dict = f.result()
+
+                for domain_name in full_domain_dict:
+                    try:
+                        pp.info("Subdomain: %s (%s)"%(domain_name,full_domain_dict[domain_name]))
+                        if logfile:
+                            logfile.writer.writerow({'FQDN':domain_name, 'IP':full_domain_dict[domain_name], 'ASN_CIDR':'N/A', 'ASN_DESCRIPTION':'N/A', 'METHOD':'inception'})
+                    except Exception as e:
+                        if verbose:
+                            pp.warning("Subdomain: %s (%s)"%(domain_name,e))
+                        continue
 
    
 
@@ -278,14 +298,8 @@ def main():
             time.sleep(1)                      # wait for all threads to finish
 
     pp.status("Scan completed in: %s"%str(total)[:str(total).index(".")])
-    if logfile:
-        pp.log_status("Scan completed in: %s"%str(total)[:str(total).index(".")], logfile)    
+
         
-
-        # '''Write the results to a CSV'''
-        # if options.output:
-        #         logfile.writer.writerow({'IP': ip, 'ASN': asn, 'ASN_CIDR': asn_cidr, 'ASN_DESCRIPTION': asn_description, 'NETS_CIDR': nets_cidr, 'NETS_NAME': nets_name, 'NETS_DESCRIPTION': nets_description})
-
 
     #Done, close the file
     if options.output:
