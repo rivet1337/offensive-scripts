@@ -104,6 +104,7 @@ def main():
                       help="Socket timeout in seconds")
     group.add_option("--maxthread", dest="max", type="int",
                       help="Maximum thread count")
+    group.add_option("--nameserver", dest="nameserver", help="IP address of a nameserver (default: 8.8.8.8)", metavar="NAMESERVER")
 
 
     group1 = OptionGroup(parser, "Using inception & aliases",
@@ -118,7 +119,7 @@ def main():
     group1.add_option("--inception", dest="inception", action="store_true", 
                     help="Recursive subdomain enumeration using identified CIDRs")
     group1.add_option("--aliases", dest="aliases", help="Comma separated list of aliases to use", metavar="ALIASES")
-    group1.add_option("--nameserver", dest="nameserver", help="IP address of a nameserver (default: 8.8.8.8)", metavar="NAMESERVER")
+
 
 
     parser.add_option_group(group)

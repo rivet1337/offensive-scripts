@@ -9,6 +9,7 @@ I tend to keep these files handy on my iPhone and iPad in case I want to do some
 |----------------------|------------------------------------------------------|
 |ftp_scanner.py| Find open & anonymous FTP servers (use "-h" for more)|
 |ssh_scanner.py| SSH login bruteforcer|
+|dns_scanner.py| Extended DNS lookup tool with a few twists|
 |port_scanner.py| Dirty simple port scanner that utilizes the other scripts here|
 |prettyprint.py| Just a beautification library, look at the code for examples|
 |ipmagic.py| Manipulate IPs using WHOIS information|
