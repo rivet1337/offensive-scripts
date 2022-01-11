@@ -10,7 +10,7 @@ import ipaddress
 import signal
 
 
-''' parse a list of IPs as input and outputs the associated CIDRs based on WHOIS information'''
+''' parse a list of IPs as input and outputs the associated CIDRs based on WHOIS information!'''
 
 def signal_handler(signal, frame):
 		pp.error('System Interupt requested, attempting to exit cleanly!')
