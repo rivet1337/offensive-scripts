@@ -5,6 +5,17 @@
     2. IP address
     3. ASN CIDR
     4. ASN Description
+
+    TODO: Add --AXFR check
+    TODO: Add --MX check
+    TODO: Add --SRV check
+    TODO: Add --IPV6 check
+    TODO: Check for --SPF record IPs
+    TODO: Add --crt-sh check (https://github.com/YashGoti/crtsh/blob/master/crtsh.py)
+    TODO: Check for other --TLDs that match the domain and/or aliases
+    TODO: Export to --sqlite3
+    TODO: Export to --json
+
 '''
 
 from optparse import OptionParser, OptionGroup
@@ -258,6 +269,15 @@ def main():
     
     if ipwhois:
         print("\n")
+        '''
+        TODO: I need to add parent (NET) information here
+        TODO: I need to check if NET or ASN matches the aliases list, 
+                if so then return results for all IPs in that subnet otherwise return results only for aliases
+                Probably the easiest way to do this is to add one more check in "check_cidr" to specify if
+                the target is the owner of the subnet or not. If it's an owner then return the results for all IPs in that subnet.
+        TODO: If the NETS owner/description matches an alias add it to the list as well.
+        '''
+
         pp.status("Performing IP whois lookup on idendified IP ranges")
         for ip in set(inception_list):
            pp.info("CIDR: %s - Owner: %s"%(ip, ipmagic.get_asn_info(ip.rsplit('/', 1)[0])))
