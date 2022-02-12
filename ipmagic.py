@@ -10,6 +10,7 @@ import ipaddress
 import signal
 
 
+
 ''' - - parse a list of IPs as input and outputs the associated CIDRs based on WHOIS information!'''
 
 def signal_handler(signal, frame):
@@ -37,6 +38,18 @@ def ip2ASN(ip):
 
     return asn, asn_cidr, asn_description, nets_cidr, nets_name, nets_description
 
+def asn2IP(asnNum):
+    
+    results = ipwhois.asn.ASNOrigin(ipwhois.net.Net("1.2.3.4")).lookup(asn=asnNum)
+
+    asnDict = {}
+    for i in range(0,len(results['nets'])):
+        asnDict[results['nets'][i]['cidr']] = results['nets'][i]['description']
+        
+    return asnDict
+
+
+
 def get_asn_info(ip):
     asn, asn_cidr, asn_description, nets_cidr, nets_name, nets_description = ip2ASN(ip)
     return asn_description
@@ -52,6 +65,10 @@ def get_nets_cidr(ip):
 def get_nets_info(ip):
     asn, asn_cidr, asn_description, nets_cidr, nets_name, nets_description = ip2ASN(ip)
     return nets_name
+
+def get_asn_number(ip):
+    asn, asn_cidr, asn_description, nets_cidr, nets_name, nets_description = ip2ASN(ip)
+    return asn
 
 def main():
     ''' main function '''
@@ -69,6 +86,8 @@ def main():
                     "If you specify more than one, only the last one will be used.")
     group.add_option( "--asn-cidr", action="store_true", dest="asncidr", help="Return ASN CIDR")
     group.add_option( "--net-cidr", action="store_true", dest="netcidr", help="Return NET CIDR")
+    group.add_option( "--asn-number", action="store_true", dest="asnnumber", help="Return the ASN number")
+    group.add_option( "--asn2ip", dest="asn2ip", help="Input ASN and return IP subnets associated with it")
 
     parser.add_option_group(group)
 
@@ -92,7 +111,7 @@ def main():
         logfile = None
 
     try:
-        ip_list=[]
+        
         if options.ip_address:
 
             if options.ip_address=="-":
@@ -104,6 +123,10 @@ def main():
             
         elif options.ip_list:
             ip_list=[line.rstrip() for line in open(options.ip_list)]
+
+        elif options.asn2ip:
+            asnNum = options.asn2ip
+            ip_list=["0.0.0.0"]
         else:
             parser.error("IP address not specified")
     
@@ -120,6 +143,14 @@ def main():
     elif options.netcidr:
         for ip in ip_list:
             print(get_nets_cidr(ip))
+    elif options.asnnumber:
+        for ip in ip_list:
+            print(get_asn_number(ip))
+    elif options.asn2ip:
+        asnSubnets = asn2IP(asnNum)
+        pp.status("%s has %d subnets:"%(asnNum, len(asnSubnets)))
+        for i in asnSubnets:
+            pp.info_spaces("%s: %s"%(i, asnSubnets[i]))
     else:
         for ip in ip_list:
             ''' convert an IP to an ASN CIDR '''
@@ -131,6 +162,15 @@ def main():
             pp.info_spaces("NETS CIDR: %s"%nets_cidr)
             pp.info_spaces("NETS Name: %s"%nets_name)
             pp.info_spaces("NETS Description: %s"%nets_description)
+
+            ''' Analyze the ASN as well to identify any further subnets'''
+            for asnN in asn.split(" "):
+                print("\n")
+                asnSubnets = asn2IP(asnN)
+                pp.status("%s has %d subnets:"%(asnN, len(asnSubnets)))
+                for i in asnSubnets:
+                    pp.info_spaces("%s: %s"%(i, asnSubnets[i]))
+            
         
         
 
