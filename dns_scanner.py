@@ -147,7 +147,8 @@ def main():
     group1.add_option("--inception", dest="inception", action="store_true", 
                     help="Recursive subdomain enumeration using identified CIDRs")
     group1.add_option("--aliases", dest="aliases", help="Comma separated list of aliases to use", metavar="ALIASES")
-
+    group1.add_option("--asn2ip", dest="asn2ips", action="store_true", 
+                    help="From the existing IPs identify the ASN, and then any further IP subnets associated with that ASN")
 
 
     parser.add_option_group(group)
@@ -187,6 +188,13 @@ def main():
         ipwhois=True
     else:
         inception=False
+    
+    if options.asn2ips:
+        asn2ips=True
+        ipwhois=True
+        inception=True
+    else:
+        asn2ips=False
 
     global verbose
     if options.verbose:
@@ -251,7 +259,8 @@ def main():
 
     pp.status("Starting scan...")
 
-    inception_list=[]
+    inception_list=set()
+    asn_number_set=set()
 
 
     if wordlist_file:
@@ -259,6 +268,7 @@ def main():
     else:
         wordlist=["ns", "ns1", "ns2", "ns3", "ns4", "dns", "www", "www2", "time", "whois", "mail", 
         "host", "dev", "test", "web", "webmail", "backup", "direct", "ftp", "secure", "imap", "pop", "smtp", "proxy", "local"]
+        # wordlist=["webmail"]
 
     for domain in domain_list:
         pp.status("Scanning %s"%domain)
@@ -277,7 +287,8 @@ def main():
                 for ip in ips:
                     ip_cidr = ipmagic.get_asn_cidr(ip)
                     if ip_cidr != '':
-                        inception_list.append(ip_cidr)
+                        inception_list.add(ip_cidr)
+                        asn_number_set.add(ipmagic.get_asn_number(ip.rsplit('/', 1)[0]))
                         if logfile:
                             logfile.writer.writerow({'FQDN':full_domain, 'IP':ip, 'ASN_CIDR':ip_cidr, 'ASN_DESCRIPTION':ipmagic.get_asn_info(ip.rsplit('/', 1)[0]), 'METHOD':'wordlist'})
 
@@ -288,12 +299,23 @@ def main():
         print("\n")
         pp.status("Performing IP whois lookup on idendified IP ranges")
         for ip in set(inception_list):
-           pp.info("CIDR: %s - Owner: %s - NETS: %s"%(ip, ipmagic.get_asn_info(ip.rsplit('/', 1)[0]), ipmagic.get_nets_info(ip.rsplit('/', 1)[0])))
+           pp.info("CIDR: %s - Owner: %s - NETS: %s - ASN: %s"%(ip, ipmagic.get_asn_info(ip.rsplit('/', 1)[0]), ipmagic.get_nets_info(ip.rsplit('/', 1)[0]), ipmagic.get_asn_number(ip.rsplit('/', 1)[0])))
     
-                        
+    if asn2ips:
+        print("\n")
+        pp.status("ASN Inception checks for %s"%domain)
+        for asn in asn_number_set:
+            for asnN in asn.split(" "):
+                    asnSubnets = ipmagic.asn2IP(asnN)
+                    pp.status("%s has %d subnets"%(asnN, len(asnSubnets)))
+                    for i in asnSubnets:
+                        if verbose:
+                            pp.info_spaces("Adding %s (%s) to inception list..."%(i, asnSubnets[i]))
+                        inception_list.add(i)                  
 
     if inception:
         print("\n")
+        print(inception_list)
         pp.status("Inception checks for %s"%domain)
         with concurrent.futures.ThreadPoolExecutor(max_workers=tmax) as executor:
             results = [executor.submit(check_cidr, inception_cidr, domain, aliases) for inception_cidr in set(inception_list)]
