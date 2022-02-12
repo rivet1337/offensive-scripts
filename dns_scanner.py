@@ -6,6 +6,7 @@
     3. ASN CIDR
     4. ASN Description
 
+    TODO: From the identified ASN, get the associated subnets and check them too (to do that, I need to add a new function called ASN2ip in ipmagic.py then invoke it here)
     TODO: Add --AXFR check
     TODO: Add --MX check
     TODO: Add --SRV check
@@ -60,23 +61,39 @@ def check_cidr(inception_cidr, domain, aliases):
         pp.info("Checking CIDR: %s"%inception_cidr)
     
     inception_ips=ipaddress.ip_network(inception_cidr).hosts()
-    #turn the IP into a domain
-    #valid_inception_domains=[]
     valid_inception_domains={}
     for inception_ip in inception_ips:
+       
         try:
             inception_domain=socket.gethostbyaddr(str(inception_ip))[0]
+            if verbose:
+                pp.info("%s resolves to %s"%(inception_ip, inception_domain))
 
-            if domain in inception_domain:
-                #valid_inception_domains.append(inception_domain)
+            # Does the IP resolve to a hostname that matches -d flag? Add it to the list!
+            if domain.lower() in inception_domain.lower():
+                #print("[domain] Adding %s"%inception_domain)
                 valid_inception_domains[inception_domain]=inception_ip
+            
             for alias in aliases:
-                if alias in inception_domain:
-                    #valid_inception_domains.append(inception_domain)
+                # Does the IP resolve to a hostname that matches any of the --aliases flags? Add it to the list!
+                if alias.lower() in inception_domain.lower():
+                    #print("[Alias] Adding %s"%inception_domain)
                     valid_inception_domains[inception_domain]=inception_ip
+                
+                # # Does the IP ASN description matches any of the --aliases flags? Add it to the list!
+                if ipmagic.get_asn_info(inception_ip) != None:
+                    if alias.lower() in ipmagic.get_asn_info(inception_ip).lower():
+                        #print("[ASN] Adding %s"%inception_domain)
+                        valid_inception_domains[inception_domain]=inception_ip
+
+                # Does the IP NETS description matches any of the --aliases flags? Add it to the list!
+                if alias.lower() in ipmagic.get_nets_info(inception_ip).lower():
+                   #print("[NETS] Adding %s"%inception_domain)
+                   valid_inception_domains[inception_domain]=inception_ip
+        
         except:
             pass
-
+        
 
     #return set(valid_inception_domains)
     return valid_inception_domains
@@ -269,18 +286,9 @@ def main():
     
     if ipwhois:
         print("\n")
-        '''
-        TODO: I need to add parent (NET) information here
-        TODO: I need to check if NET or ASN matches the aliases list, 
-                if so then return results for all IPs in that subnet otherwise return results only for aliases
-                Probably the easiest way to do this is to add one more check in "check_cidr" to specify if
-                the target is the owner of the subnet or not. If it's an owner then return the results for all IPs in that subnet.
-        TODO: If the NETS owner/description matches an alias add it to the list as well.
-        '''
-
         pp.status("Performing IP whois lookup on idendified IP ranges")
         for ip in set(inception_list):
-           pp.info("CIDR: %s - Owner: %s"%(ip, ipmagic.get_asn_info(ip.rsplit('/', 1)[0])))
+           pp.info("CIDR: %s - Owner: %s - NETS: %s"%(ip, ipmagic.get_asn_info(ip.rsplit('/', 1)[0]), ipmagic.get_nets_info(ip.rsplit('/', 1)[0])))
     
                         
 
