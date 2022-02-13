@@ -6,11 +6,10 @@
     3. ASN CIDR
     4. ASN Description
 
-    TODO: From the identified ASN, get the associated subnets and check them too (to do that, I need to add a new function called ASN2ip in ipmagic.py then invoke it here)
+    TODO: Add curl "https://urlscan.io/api/v1/search/?q=domain:<domain.com>"
     TODO: Add --AXFR check
     TODO: Add --MX check
     TODO: Add --SRV check
-    TODO: Add --IPV6 check
     TODO: Check for --SPF record IPs
     TODO: Add --crt-sh check (https://github.com/YashGoti/crtsh/blob/master/crtsh.py)
     TODO: Check for other --TLDs that match the domain and/or aliases
@@ -192,7 +191,7 @@ def main():
     if options.asn2ips:
         asn2ips=True
         ipwhois=True
-        inception=True
+        #inception=True
     else:
         asn2ips=False
 
@@ -260,6 +259,7 @@ def main():
     pp.status("Starting scan...")
 
     inception_list=set()
+    asn2ip_list=set()
     asn_number_set=set()
 
 
@@ -287,8 +287,7 @@ def main():
                 for ip in ips:
                     ip_cidr = ipmagic.get_asn_cidr(ip)
                     if ip_cidr != '':
-                        inception_list.add(ip_cidr)
-                        asn_number_set.add(ipmagic.get_asn_number(ip.rsplit('/', 1)[0]))
+                        inception_list.add(ip_cidr)        
                         if logfile:
                             logfile.writer.writerow({'FQDN':full_domain, 'IP':ip, 'ASN_CIDR':ip_cidr, 'ASN_DESCRIPTION':ipmagic.get_asn_info(ip.rsplit('/', 1)[0]), 'METHOD':'wordlist'})
 
@@ -298,24 +297,38 @@ def main():
     if ipwhois:
         print("\n")
         pp.status("Performing IP whois lookup on idendified IP ranges")
-        for ip in set(inception_list):
-           pp.info("CIDR: %s - Owner: %s - NETS: %s - ASN: %s"%(ip, ipmagic.get_asn_info(ip.rsplit('/', 1)[0]), ipmagic.get_nets_info(ip.rsplit('/', 1)[0]), ipmagic.get_asn_number(ip.rsplit('/', 1)[0])))
-    
+        for ip in set(inception_list):          
+            asn_info=ipmagic.get_asn_info(ip.rsplit('/', 1)[0])
+            asn_nets=ipmagic.get_nets_info(ip.rsplit('/', 1)[0])
+            asn_number=ipmagic.get_asn_number(ip.rsplit('/', 1)[0])
+            asn_number_set.add(asn_number)
+            pp.info("CIDR: %s - Owner: %s - NETS: %s - ASN: %s"%(ip, asn_info, asn_nets, asn_number))
+            if logfile:
+                logfile.writer.writerow({'FQDN':'N/A', 'IP':'N/A', 'ASN_CIDR':ip, 'ASN_DESCRIPTION':asn_info, 'METHOD':'ipwhois'})
+
+
     if asn2ips:
         print("\n")
         pp.status("ASN Inception checks for %s"%domain)
+
         for asn in asn_number_set:
             for asnN in asn.split(" "):
                     asnSubnets = ipmagic.asn2IP(asnN)
-                    pp.status("%s has %d subnets"%(asnN, len(asnSubnets)))
+                    pp.info("AS%s has %d subnets"%(asnN, len(asnSubnets)))
                     for i in asnSubnets:
                         if verbose:
-                            pp.info_spaces("Adding %s (%s) to inception list..."%(i, asnSubnets[i]))
-                        inception_list.add(i)                  
+                            pp.info_spaces("%s: %s (%s)"%(asnN, i, asnSubnets[i]))
+                        asn2ip_list.add(i)  
+                        if logfile:
+                            logfile.writer.writerow({'FQDN':'N/A', 'IP':'N/A', 'ASN_CIDR':i, 'ASN_DESCRIPTION':asnSubnets[i], 'METHOD':'asn2ip'})    
+
+              
+        
+
 
     if inception:
+        inception_list.update(asn2ip_list) #merge inception (created during the original run) and asn2ip (created during asn2ips) lists
         print("\n")
-        print(inception_list)
         pp.status("Inception checks for %s"%domain)
         with concurrent.futures.ThreadPoolExecutor(max_workers=tmax) as executor:
             results = [executor.submit(check_cidr, inception_cidr, domain, aliases) for inception_cidr in set(inception_list)]
