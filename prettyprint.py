@@ -22,19 +22,24 @@ class bcolors:
 	backCyan = '\033[46m'
 	backWhite = '\033[47m'
 
-def status(message):
+def status(message, newline=False):
+	if newline: print("\n")
 	print(bcolors.GREEN + bcolors.BOLD + "[*] " + bcolors.ENDC + str(message))
 
-def info(message):
+def info(message, newline=False):
+	if newline: print("\n")
 	print(bcolors.BLUE + bcolors.BOLD + "[+] " + bcolors.ENDC + str(message))
 
-def info_spaces(message):
+def info_spaces(message, newline=False):
+	if newline: print("\n")
 	print(bcolors.BLUE + bcolors.BOLD + "  [-] " + bcolors.ENDC + str(message))
 
-def warning(message):
+def warning(message, newline=False):
+	if newline: print("\n")
 	print(bcolors.YELLOW + bcolors.BOLD + "[!] " + bcolors.ENDC + str(message))
 
-def error(message):
+def error(message, newline=False):
+	if newline: print("\n")
 	print(bcolors.RED + bcolors.BOLD + "[!] " + bcolors.ENDC + bcolors.RED + str(message) + bcolors.ENDC)
 
 

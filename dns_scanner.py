@@ -6,7 +6,6 @@
     3. ASN CIDR
     4. ASN Description
 
-    TODO: Add curl "https://urlscan.io/api/v1/search/?q=domain:<domain.com>"
     TODO: Add --AXFR check
     TODO: Add --MX check
     TODO: Add --SRV check
@@ -32,6 +31,7 @@ import concurrent.futures
 import sys
 import csv
 import dns.resolver
+import requests
 
 
 def signal_handler(signal, frame):
@@ -39,6 +39,23 @@ def signal_handler(signal, frame):
 		exit(1)
 
 signal.signal(signal.SIGINT, signal_handler)
+
+
+def get_hosts_from_urlscanio(domain,aliases):
+    r = requests.get("https://urlscan.io/api/v1/search/?q=domain:%s"%domain)
+    if r.status_code == 200:
+        results_from_json = dict(r.json())
+    hosts=set()
+    for i in range(0,len(results_from_json["results"])):
+        found_host = results_from_json["results"][i]["task"]['domain']
+        if domain.lower() in found_host.lower():
+            hosts.add(found_host)
+
+        for alias in aliases:
+            if alias.lower() in found_host.lower():
+                hosts.add(found_host)
+    
+    return hosts
 
 def check_domain_exists(domain):
     ips=[]
@@ -123,10 +140,7 @@ def main():
                       action="store_true", help="Verbose output")
 
 
-    group = OptionGroup(parser, "Advanced options")
-
-    group.add_option( "--ipwhois", action="store_true", dest="ipwhois", 
-                    help="Perform an IP whois lookup")
+    group = OptionGroup(parser, "Extra settings")
     group.add_option("--timeout", dest="timeout", type="float",
                       help="Socket timeout in seconds")
     group.add_option("--maxthread", dest="max", type="int",
@@ -134,7 +148,15 @@ def main():
     group.add_option("--nameserver", dest="nameserver", help="IP address of a nameserver (default: 8.8.8.8)", metavar="NAMESERVER")
 
 
-    group1 = OptionGroup(parser, "Using inception & aliases",
+    group1 = OptionGroup(parser, "Advanced options & checks")
+    group1.add_option( "--ipwhois", action="store_true", dest="ipwhois", 
+                    help="Perform an IP whois lookup")
+    group1.add_option( "--urlscanio", action="store_true", dest="urlscanio", 
+                    help="try to get extra subdomains from urlscan.io")
+    group1.add_option("--asn2ip", dest="asn2ips", action="store_true", 
+                    help="From the existing IPs identify the ASN, and then any further IP subnets associated with that ASN")
+
+    group2 = OptionGroup(parser, "Using inception & aliases",
                     "Inception is simply a recursive reverse DNS lookup of the subnets (CIDRs) from the domains identified via the wordlist."
                     " Some companies use aliases when creating domain names. For example Google uses google.com but also googledomains.com, "
                     "google-access.net, .google (TLD), 1e100.net, etc."
@@ -143,15 +165,15 @@ def main():
                     " Aliases require and assume --ipwhois and --inception."
                     " e.g. -d google.com --inception --aliases=1e100.net,google")
     
-    group1.add_option("--inception", dest="inception", action="store_true", 
+    group2.add_option("--inception", dest="inception", action="store_true", 
                     help="Recursive subdomain enumeration using identified CIDRs")
-    group1.add_option("--aliases", dest="aliases", help="Comma separated list of aliases to use", metavar="ALIASES")
-    group1.add_option("--asn2ip", dest="asn2ips", action="store_true", 
-                    help="From the existing IPs identify the ASN, and then any further IP subnets associated with that ASN")
+    group2.add_option("--aliases", dest="aliases", help="Comma separated list of aliases to use", metavar="ALIASES")
+
 
 
     parser.add_option_group(group)
     parser.add_option_group(group1)
+    parser.add_option_group(group2)
 
     (options, args) = parser.parse_args()
 
@@ -181,6 +203,11 @@ def main():
         ipwhois=True
     else:
         ipwhois=False
+
+    if options.urlscanio:
+        urlscanio=True
+    else:
+        urlscanio=False
 
     if options.inception:
         inception=True
@@ -233,7 +260,7 @@ def main():
     if options.aliases and options.domain_list:
         parser.error("--aliases is not compatible with --domain-list")
     elif options.aliases:
-        inception=True
+        #inception=True
         ipwhois=True
         aliases=options.aliases.split(',')
     else:
@@ -292,11 +319,34 @@ def main():
                             logfile.writer.writerow({'FQDN':full_domain, 'IP':ip, 'ASN_CIDR':ip_cidr, 'ASN_DESCRIPTION':ipmagic.get_asn_info(ip.rsplit('/', 1)[0]), 'METHOD':'wordlist'})
 
 
+    if urlscanio:
+        for domain in domain_list:
+            pp.status("Results from URLScan.io for [%s]"%domain, True)
+            urlscanio_hosts = get_hosts_from_urlscanio(domain,aliases)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=tmax) as executor:
+                results = [executor.submit(check_domain_exists, urlscanio_host) for urlscanio_host in urlscanio_hosts]
+                for f in concurrent.futures.as_completed(results):
+                    full_domain, ips = f.result()
+                    if ips == None:
+                        if verbose:
+                            pp.warning("Subdomain: %s (No IP address)"%full_domain)
+                        continue
+                    
+                    pp.info("Subdomain: %s (%s)"%(full_domain, ", ".join(ips)))
 
-    
+                    
+                    for ip in ips:
+                        ip_cidr = ipmagic.get_asn_cidr(ip)
+                        if ip_cidr != '':
+                            inception_list.add(ip_cidr)        
+                            if logfile:
+                                logfile.writer.writerow({'FQDN':full_domain, 'IP':ip, 'ASN_CIDR':ip_cidr, 'ASN_DESCRIPTION':ipmagic.get_asn_info(ip.rsplit('/', 1)[0]), 'METHOD':'urlscan.io'})
+
+
+
+
     if ipwhois:
-        print("\n")
-        pp.status("Performing IP whois lookup on idendified IP ranges")
+        pp.status("Performing IP whois lookup on idendified IP ranges", True)
         for ip in set(inception_list):          
             asn_info=ipmagic.get_asn_info(ip.rsplit('/', 1)[0])
             asn_nets=ipmagic.get_nets_info(ip.rsplit('/', 1)[0])
@@ -308,8 +358,7 @@ def main():
 
 
     if asn2ips:
-        print("\n")
-        pp.status("ASN Inception checks for %s"%domain)
+        pp.status("ASN Inception checks for %s"%domain, True)
 
         for asn in asn_number_set:
             for asnN in asn.split(" "):
@@ -328,8 +377,7 @@ def main():
 
     if inception:
         inception_list.update(asn2ip_list) #merge inception (created during the original run) and asn2ip (created during asn2ips) lists
-        print("\n")
-        pp.status("Inception checks for %s"%domain)
+        pp.status("Inception checks for %s"%domain, True)
         with concurrent.futures.ThreadPoolExecutor(max_workers=tmax) as executor:
             results = [executor.submit(check_cidr, inception_cidr, domain, aliases) for inception_cidr in set(inception_list)]
             for f in concurrent.futures.as_completed(results):
@@ -361,7 +409,7 @@ def main():
             pp.info_spaces("Still %s/%d threads running..."%((threading.activeCount()-1),tmax))
             time.sleep(1)                      # wait for all threads to finish
 
-    pp.status("Scan completed in: %s"%str(total)[:str(total).index(".")])
+    pp.status("Scan completed in: %s"%str(total)[:str(total).index(".")], True)
 
         
 
