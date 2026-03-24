@@ -1,0 +1,29 @@
+======================================================================
+ Nuclei Web Assessment Report
+ Domain: hawksec.com
+ Date: 2026-03-24 08:24:34
+ Duration: 0:11:33
+======================================================================
+
+[RECON SUMMARY]
+  Subdomains found: 13
+  Live hosts: 20
+  URLs crawled: 979
+
+[VULNERABILITY SUMMARY]
+  Critical: 0
+  High:     0
+  Medium:   0
+  Low:      0
+  Info:     0
+
+[TECHNOLOGIES DETECTED]
+  - Cloudflare
+  - Cloudflare Bot Management
+  - Cloudflare Browser Insights
+  - Font Awesome
+  - HTTP/3
+  - Nginx:1.29.3
+  - cdnjs
+
+======================================================================

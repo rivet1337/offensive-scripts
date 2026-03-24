@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<?xml-stylesheet href="file:///home/linuxbrew/.linuxbrew/Cellar/nmap/7.93/bin/../share/nmap/nmap.xsl" type="text/xsl"?>
+<!-- Nmap 7.93 scan initiated Tue Mar 24 09:37:00 2026 as: /home/linuxbrew/.linuxbrew/bin/nmap -sV -sC -p 80,443,8080,8443 -oN /home/user/offensive-scripts/results_hawksec_com_20260324_092048/nmap_output.txt -oX /home/user/offensive-scripts/results_hawksec_com_20260324_092048/nmap_output.xml admin.hawksec.com,api.hawksec.com,secure.hawksec.com,www.hawksec.com,www.share.hawksec.com,share.hawksec.com -->
+<nmaprun scanner="nmap" args="/home/linuxbrew/.linuxbrew/bin/nmap -sV -sC -p 80,443,8080,8443 -oN /home/user/offensive-scripts/results_hawksec_com_20260324_092048/nmap_output.txt -oX /home/user/offensive-scripts/results_hawksec_com_20260324_092048/nmap_output.xml admin.hawksec.com,api.hawksec.com,secure.hawksec.com,www.hawksec.com,www.share.hawksec.com,share.hawksec.com" start="1774345020" startstr="Tue Mar 24 09:37:00 2026" version="7.93" xmloutputversion="1.05">
+<scaninfo type="connect" protocol="tcp" numservices="4" services="80,443,8080,8443"/>
+<verbose level="0"/>
+<debugging level="0"/>
+<runstats><finished time="1774345021" timestr="Tue Mar 24 09:37:01 2026" summary="Nmap done at Tue Mar 24 09:37:01 2026; 0 IP addresses (0 hosts up) scanned in 1.41 seconds" elapsed="1.41" exit="success"/><hosts up="0" down="0" total="0"/>
+</runstats>
+</nmaprun>

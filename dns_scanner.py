@@ -280,7 +280,7 @@ def main():
     except Exception as e:
         parser.error("%s (%s)"%(e, options.nameserver))
 
-    nthreads=threading.activeCount() # get initial number of running threads
+    nthreads=threading.active_count() # get initial number of running threads
     socket.setdefaulttimeout(timeout) # set timeout
 
     pp.status("Starting scan...")
@@ -293,7 +293,7 @@ def main():
     if wordlist_file:
         wordlist=[line.rstrip() for line in open(wordlist_file)]
     else:
-        wordlist=["ns", "ns1", "ns2", "ns3", "ns4", "dns", "www", "www2", "time", "whois", "mail", 
+        wordlist=["mx1", "mx2", "smtp1", "smtp2", "ns", "ns1", "ns2", "ns3", "ns4", "dns", "www", "www2", "time", "whois", "mail", 
         "host", "dev", "test", "web", "webmail", "backup", "direct", "ftp", "secure", "imap", "pop", "smtp", "proxy", "local"]
         # wordlist=["webmail"]
 
@@ -401,12 +401,12 @@ def main():
     total =  etime - ctime
 
     tcount=0
-    while threading.activeCount()>nthreads:
+    while threading.active_count()>nthreads:
         if tcount == 0:
             pp.info("Waiting for threads to finish...")
             tcount=1
         else:
-            pp.info_spaces("Still %s/%d threads running..."%((threading.activeCount()-1),tmax))
+            pp.info_spaces("Still %s/%d threads running..."%((threading.active_count()-1),tmax))
             time.sleep(1)                      # wait for all threads to finish
 
     pp.status("Scan completed in: %s"%str(total)[:str(total).index(".")], True)

@@ -1,0 +1,13 @@
+mx.mx.mx.mx.hawksec.com
+www.share.hawksec.com
+www.hawksec.com
+admin.hawksec.com
+api.hawksec.com
+api.dev.hawksec.com
+_dmarc.mx.mx.hawksec.com
+secure.hawksec.com
+share.hawksec.com
+mx.mx.mx.hawksec.com
+admin.dev.hawksec.com
+_dmarc.mx.hawksec.com
+_dmarc.mx.mx.mx.hawksec.com
