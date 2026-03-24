@@ -1,4 +1,0 @@
-# Nmap 7.93 scan initiated Tue Mar 24 09:37:00 2026 as: /home/linuxbrew/.linuxbrew/bin/nmap -sV -sC -p 80,443,8080,8443 -oN /home/user/offensive-scripts/results_hawksec_com_20260324_092048/nmap_output.txt -oX /home/user/offensive-scripts/results_hawksec_com_20260324_092048/nmap_output.xml admin.hawksec.com,api.hawksec.com,secure.hawksec.com,www.hawksec.com,www.share.hawksec.com,share.hawksec.com
-Failed to resolve "admin.hawksec.com,api.hawksec.com,secure.hawksec.com,www.hawksec.com,www.share.hawksec.com,share.hawksec.com".
-WARNING: No targets were specified, so 0 hosts scanned.
-# Nmap done at Tue Mar 24 09:37:01 2026 -- 0 IP addresses (0 hosts up) scanned in 1.41 seconds
