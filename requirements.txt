@@ -5,4 +5,4 @@
 paramiko>=2.12.0        # ssh_scanner.py   — SSH auth, transport, key handling
 dnspython>=2.6.1        # dns_scanner.py   — DNS resolver
 ipwhois>=1.3.0          # ipmagic.py       — WHOIS / ASN lookups
-requests>=2.31.0        # dns_scanner.py   — HTTP requests
+requests>=2.31.0        # dns_scanner.py   — HTTP requests; random_scanner.py — RIR delegation file downloads
