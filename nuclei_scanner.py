@@ -11,6 +11,7 @@ import subprocess
 import json
 import csv
 import re
+import html
 import threading
 from optparse import OptionParser, OptionGroup
 import prettyprint as pp
@@ -42,6 +43,19 @@ TOOL_INSTALL_MAP = {
 }
 
 REQUIRED_TOOLS = ["subfinder", "httpx", "katana", "nuclei"]
+
+GO_INSTALL_DIR = os.path.expanduser("~/go-sdk")
+
+# System packages needed to compile CGo dependencies (katana, etc.)
+BUILD_DEPS_APT = ["gcc", "build-essential", "libpcap-dev"]
+
+# Max templates per nuclei invocation when running community sets.
+# Keeps open-socket/fd count manageable and prevents goroutine deadlock.
+COMMUNITY_BATCH_SIZE = 2000
+
+# Cap on buffered stderr lines in run_tool() to avoid unbounded memory growth
+# during long-running nuclei scans that emit stats every 10 s.
+STDERR_LINE_CAP = 500
 
 DEFAULT_NUCLEI_CONFIG = """# Nuclei config - Bug Bounty optimized (auto-generated)
 header:
@@ -122,6 +136,184 @@ signal.signal(signal.SIGINT, signal_handler)
 
 
 # === Tool Management ===
+def _detect_go_platform():
+    """Return (GOOS, GOARCH) for the current machine."""
+    import platform
+    machine = platform.machine().lower()
+    arch_map = {
+        "x86_64": "amd64", "amd64": "amd64",
+        "aarch64": "arm64", "arm64": "arm64",
+        "armv7l": "armv6l", "armv6l": "armv6l",
+    }
+    goarch = arch_map.get(machine)
+    if not goarch:
+        return None, None
+    goos = "linux" if sys.platform.startswith("linux") else (
+        "darwin" if sys.platform == "darwin" else None)
+    return goos, goarch
+
+
+def _fetch_latest_go_version():
+    """Fetch the latest stable Go version string from go.dev."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            "https://go.dev/VERSION?m=text",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            # Response is multi-line; first line is e.g. "go1.23.1"
+            return resp.read().decode().strip().split("\n")[0]
+    except Exception as e:
+        pp.warning("Could not fetch latest Go version: %s" % e)
+        return None
+
+
+def ensure_go():
+    """Check for Go and offer to install it from go.dev if missing. Returns go binary path."""
+    go_bin = shutil.which("go")
+    if go_bin:
+        return go_bin
+
+    # Check our own install location
+    local_go = os.path.join(GO_INSTALL_DIR, "bin", "go")
+    if os.path.exists(local_go):
+        os.environ["PATH"] = os.path.join(GO_INSTALL_DIR, "bin") + os.pathsep + os.environ["PATH"]
+        return local_go
+
+    pp.warning("Go is required but not installed.")
+    goos, goarch = _detect_go_platform()
+    if not goos or not goarch:
+        pp.error("Unsupported platform for automatic Go install (%s/%s). Install Go manually." % (sys.platform, goos))
+        sys.exit(1)
+
+    version = _fetch_latest_go_version()
+    if not version:
+        pp.error("Could not determine latest Go version. Install Go manually from https://go.dev/dl/")
+        sys.exit(1)
+
+    tarball = "%s.%s-%s.tar.gz" % (version, goos, goarch)
+    url = "https://go.dev/dl/%s" % tarball
+
+    pp.status("Installing %s for %s/%s..." % (version, goos, goarch))
+    pp.info("Downloading %s" % url)
+
+    import urllib.request
+    import tempfile
+    import tarfile
+
+    tmp_path = os.path.join(tempfile.gettempdir(), tarball)
+    try:
+        urllib.request.urlretrieve(url, tmp_path)
+    except Exception as e:
+        pp.error("Failed to download Go: %s" % e)
+        sys.exit(1)
+
+    # Extract to GO_INSTALL_DIR (tarball contains a top-level "go/" directory)
+    pp.status("Extracting to %s..." % GO_INSTALL_DIR)
+    if os.path.exists(GO_INSTALL_DIR):
+        shutil.rmtree(GO_INSTALL_DIR)
+    os.makedirs(GO_INSTALL_DIR, exist_ok=True)
+
+    try:
+        with tarfile.open(tmp_path, "r:gz") as tf:
+            tf.extractall(path=GO_INSTALL_DIR, filter="data")
+    except TypeError:
+        # Python < 3.12 doesn't support the filter parameter
+        with tarfile.open(tmp_path, "r:gz") as tf:
+            tf.extractall(path=GO_INSTALL_DIR)
+
+    # The tarball extracts as go/, so the binary is at GO_INSTALL_DIR/go/bin/go
+    extracted_bin = os.path.join(GO_INSTALL_DIR, "go", "bin", "go")
+    if not os.path.exists(extracted_bin):
+        pp.error("Go binary not found after extraction")
+        sys.exit(1)
+
+    # Flatten: move contents of go/ up to GO_INSTALL_DIR
+    extracted_go_dir = os.path.join(GO_INSTALL_DIR, "go")
+    for item in os.listdir(extracted_go_dir):
+        src = os.path.join(extracted_go_dir, item)
+        dst = os.path.join(GO_INSTALL_DIR, item)
+        if os.path.exists(dst):
+            if os.path.isdir(dst):
+                shutil.rmtree(dst)
+            else:
+                os.remove(dst)
+        shutil.move(src, dst)
+    os.rmdir(extracted_go_dir)
+
+    os.remove(tmp_path)
+
+    local_go = os.path.join(GO_INSTALL_DIR, "bin", "go")
+    os.environ["PATH"] = os.path.join(GO_INSTALL_DIR, "bin") + os.pathsep + os.environ["PATH"]
+
+    # Verify
+    try:
+        result = subprocess.run([local_go, "version"], capture_output=True, text=True, timeout=10)
+        pp.info("Installed: %s" % result.stdout.strip())
+    except Exception as e:
+        pp.error("Go installed but verification failed: %s" % e)
+        sys.exit(1)
+
+    return local_go
+
+
+def ensure_build_deps():
+    """Install C compiler and libraries required by CGo-dependent tools."""
+    if shutil.which("gcc"):
+        return
+
+    pp.warning("C compiler (gcc) not found — required to build katana and other CGo tools.")
+
+    # Detect package manager
+    apt_bin = shutil.which("apt-get")
+    dnf_bin = shutil.which("dnf")
+    yum_bin = shutil.which("yum")
+    pacman_bin = shutil.which("pacman")
+
+    if apt_bin:
+        pp.status("Installing build dependencies via apt (%s)..." % ", ".join(BUILD_DEPS_APT))
+        proc = subprocess.run(
+            [apt_bin, "install", "-y"] + BUILD_DEPS_APT,
+            capture_output=True, text=True, timeout=120,
+            env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"},
+        )
+    elif dnf_bin:
+        pkgs = ["gcc", "make", "libpcap-devel"]
+        pp.status("Installing build dependencies via dnf (%s)..." % ", ".join(pkgs))
+        proc = subprocess.run(
+            [dnf_bin, "install", "-y"] + pkgs,
+            capture_output=True, text=True, timeout=120,
+        )
+    elif yum_bin:
+        pkgs = ["gcc", "make", "libpcap-devel"]
+        pp.status("Installing build dependencies via yum (%s)..." % ", ".join(pkgs))
+        proc = subprocess.run(
+            [yum_bin, "install", "-y"] + pkgs,
+            capture_output=True, text=True, timeout=120,
+        )
+    elif pacman_bin:
+        pkgs = ["gcc", "make", "libpcap"]
+        pp.status("Installing build dependencies via pacman (%s)..." % ", ".join(pkgs))
+        proc = subprocess.run(
+            [pacman_bin, "-S", "--noconfirm"] + pkgs,
+            capture_output=True, text=True, timeout=120,
+        )
+    else:
+        pp.error("No supported package manager found (apt/dnf/yum/pacman). Install gcc manually.")
+        sys.exit(1)
+
+    if proc.returncode != 0:
+        pp.error("Failed to install build dependencies:\n%s" % proc.stderr.strip()[-500:])
+        sys.exit(1)
+
+    if not shutil.which("gcc"):
+        pp.error("gcc still not found after installation. Check your system.")
+        sys.exit(1)
+
+    pp.info("Build dependencies installed")
+
+
 def get_tool_path(name):
     """Resolve tool binary path: check ~/go/bin/ first, then PATH."""
     gobin_path = os.path.join(GOBIN, name)
@@ -147,11 +339,10 @@ def ensure_tool(name):
     pp.status("Installing %s..." % name)
     install_url = TOOL_INSTALL_MAP[name]
 
-    go_bin = shutil.which("go")
-    if not go_bin:
-        pp.error("Go is required but not installed. Install Go first.")
-        sys.exit(1)
+    go_bin = ensure_go()
+    ensure_build_deps()
 
+    stderr_lines = []
     proc = subprocess.Popen(
         [go_bin, "install", "-v", install_url],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -159,6 +350,7 @@ def ensure_tool(name):
     for line in proc.stderr:
         line = line.rstrip('\n')
         if line:
+            stderr_lines.append(line)
             display = line if len(line) <= 120 else line[:117] + "..."
             sys.stderr.write("\r\033[K  \033[36m%s\033[0m" % display)
             sys.stderr.flush()
@@ -167,7 +359,10 @@ def ensure_tool(name):
     sys.stderr.flush()
 
     if proc.returncode != 0:
-        pp.error("Failed to install %s" % name)
+        # Show the last few lines of stderr so the user can diagnose
+        pp.error("Failed to install %s (exit code %d)" % (name, proc.returncode))
+        for err_line in stderr_lines[-10:]:
+            pp.error("  %s" % err_line)
         sys.exit(1)
 
     path = get_tool_path(name)
@@ -191,12 +386,11 @@ def ensure_optional_tool(name):
         return None
 
     pp.status("Installing optional tool %s..." % name)
-    go_bin = shutil.which("go")
-    if not go_bin:
-        pp.warning("Go not found, cannot install %s" % name)
-        return None
+    go_bin = ensure_go()
+    ensure_build_deps()
 
     try:
+        stderr_lines = []
         proc = subprocess.Popen(
             [go_bin, "install", "-v", TOOL_INSTALL_MAP[name]],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -204,6 +398,7 @@ def ensure_optional_tool(name):
         for line in proc.stderr:
             line = line.rstrip('\n')
             if line:
+                stderr_lines.append(line)
                 display = line if len(line) <= 120 else line[:117] + "..."
                 sys.stderr.write("\r\033[K  \033[36m%s\033[0m" % display)
                 sys.stderr.flush()
@@ -212,6 +407,8 @@ def ensure_optional_tool(name):
         sys.stderr.flush()
         if proc.returncode != 0:
             pp.warning("Failed to install %s" % name)
+            for err_line in stderr_lines[-10:]:
+                pp.warning("  %s" % err_line)
             return None
     except subprocess.TimeoutExpired:
         proc.terminate()
@@ -301,10 +498,16 @@ def run_tool(tool_path, args, output_file=None, timeout=600):
     stderr_lines = []
 
     def _read_stream(stream, lines_list):
-        """Read a stream line by line and show live status."""
+        """Read a stream line by line and show live status.
+
+        lines_list is capped at STDERR_LINE_CAP to prevent unbounded growth
+        during long-running tools (e.g. nuclei emitting stats every 10 s).
+        """
         for line in stream:
             line = line.rstrip('\n')
             if line:
+                if len(lines_list) >= STDERR_LINE_CAP:
+                    lines_list.pop(0)
                 lines_list.append(line)
                 # Overwrite the current terminal line with latest output
                 display = line if len(line) <= 120 else line[:117] + "..."
@@ -494,6 +697,104 @@ def phase_crawl(results_dir, tools, options):
         return None
 
 
+def _run_nuclei_community_batched(nuclei_bin, input_file, tmpl_dir, out_json,
+                                   base_args, batch_timeout, target_count, options):
+    """Run community templates in batches to avoid socket/fd exhaustion.
+
+    Each batch symlinks ~COMMUNITY_BATCH_SIZE templates into a temp dir and
+    runs nuclei against it, appending JSONL findings to out_json.
+    """
+    import glob as _glob
+    import tempfile as _tempfile
+
+    yamls = sorted(_glob.glob(os.path.join(tmpl_dir, "**", "*.yaml"), recursive=True))
+    total = len(yamls)
+    if total == 0:
+        pp.warning("No community templates found in %s" % tmpl_dir)
+        return
+
+    batches = [yamls[i:i + COMMUNITY_BATCH_SIZE]
+               for i in range(0, total, COMMUNITY_BATCH_SIZE)]
+    pp.status("Running community templates in %d batches of ~%d (%d total)" % (
+        len(batches), COMMUNITY_BATCH_SIZE, total), newline=True)
+
+    # Strip the output-file args from base_args; we'll append to out_json ourselves
+    # Base args already contain -jsonl -o <path> so we reuse them directly.
+
+    per_batch_timeout = max(target_count * 10 * 60, batch_timeout // max(len(batches), 1), 600)
+
+    for idx, batch in enumerate(batches):
+        pp.status("Community batch %d/%d (%d templates)..." % (idx + 1, len(batches), len(batch)))
+
+        # Write a flat temp dir with symlinks to this batch's templates
+        tmpdir = _tempfile.mkdtemp(prefix="nuclei_batch_")
+        batch_out = _tempfile.NamedTemporaryFile(
+            prefix="nuclei_batch_out_", suffix=".json", delete=False)
+        batch_out_path = batch_out.name
+        batch_out.close()
+
+        try:
+            for i, tmpl_path in enumerate(batch):
+                link_name = os.path.join(tmpdir, "%05d_%s" % (i, os.path.basename(tmpl_path)))
+                try:
+                    os.symlink(tmpl_path, link_name)
+                except OSError:
+                    pass
+
+            # Build batch args: write to a temp file per batch so nuclei's
+            # truncate-on-open doesn't wipe findings from previous batches.
+            batch_args = []
+            skip_next = False
+            for arg in base_args:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if arg == "-t":
+                    skip_next = True
+                    continue
+                if arg in ("-as",):
+                    continue
+                # Replace the main output file with the per-batch temp file
+                if arg == out_json:
+                    batch_args.append(batch_out_path)
+                    continue
+                batch_args.append(arg)
+
+            batch_args.extend(["-t", tmpdir])
+
+            retcode, _, _ = run_tool(nuclei_bin, batch_args, timeout=per_batch_timeout)
+
+            # Append batch findings to the main output file
+            new_findings = 0
+            if os.path.exists(batch_out_path) and os.path.getsize(batch_out_path) > 0:
+                with open(batch_out_path, 'r') as src, open(out_json, 'a') as dst:
+                    for line in src:
+                        if line.strip():
+                            dst.write(line)
+                            new_findings += 1
+
+            if retcode == -1:
+                pp.warning("Batch %d/%d timed out — %d findings appended, continuing" % (
+                    idx + 1, len(batches), new_findings))
+            elif retcode not in (0, 1):
+                pp.warning("Batch %d/%d exited with code %d (%d findings)" % (
+                    idx + 1, len(batches), retcode, new_findings))
+            else:
+                current = 0
+                if os.path.exists(out_json):
+                    with open(out_json) as f:
+                        current = sum(1 for l in f if l.strip())
+                pp.info("Batch %d/%d done — +%d findings (%d total)" % (
+                    idx + 1, len(batches), new_findings, current))
+
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            try:
+                os.unlink(batch_out_path)
+            except OSError:
+                pass
+
+
 def phase_nuclei(results_dir, tools, options):
     """Phase 4: Vulnerability scanning with nuclei."""
     pp.status("Phase 4: Vulnerability Scanning (nuclei)", newline=True)
@@ -501,7 +802,6 @@ def phase_nuclei(results_dir, tools, options):
     katana_file = os.path.join(results_dir, "katana_urls.txt")
     live_hosts_file = os.path.join(results_dir, "live_hosts.txt")
     nuclei_json = os.path.join(results_dir, "nuclei_output.json")
-    nuclei_txt = os.path.join(results_dir, "nuclei_output.txt")
 
     # Use katana URLs if available, otherwise live hosts
     if os.path.exists(katana_file) and os.path.getsize(katana_file) > 0:
@@ -515,32 +815,44 @@ def phase_nuclei(results_dir, tools, options):
     rl = STEALTH_RATE_LIMIT if options.stealth else options.rate_limit
     conc = STEALTH_CONCURRENCY if options.stealth else options.max
 
+    # Use -jsonl + -o so findings are written incrementally (survives timeout/kill).
+    # The -je flag only dumps on clean exit and is lost if nuclei is interrupted.
+    #
+    # With large community template sets (80K+), interactsh opens thousands of
+    # long-lived OOB callback sockets which deadlocks nuclei's goroutine pool.
+    # Disable it when community templates are active; OAST-only templates will
+    # be skipped but everything else (CVE probes, misconfigs) still runs fine.
+    has_community = bool(options.community_templates and
+                         os.path.isdir(options.community_templates or ""))
+    no_interactsh_flag = ["-ni"] if has_community else []
+
+    # Reduce bulk-size with community templates to avoid goroutine explosion.
+    effective_bulk = 5 if has_community else 25
+
     args = [
         "-l", input_file,
         "-severity", options.severity,
         "-rl", str(rl),
-        "-je", nuclei_json,
-        "-o", nuclei_txt,
+        "-jsonl", "-o", nuclei_json,
         "-c", str(conc),
+        "-bs", str(effective_bulk),
         # Restrict to web-relevant protocols only (skip network/cloud/file/code)
         "-type", "http",
         "-type", "dns",
         "-type", "ssl",
         "-type", "headless",
-    ]
+    ] + no_interactsh_flag
 
     # Allow scanning all protocols if user explicitly wants it
     if options.all_protocols:
-        args = [x for x in args if x != "-type"]
-        # Rebuild without -type filters
         args = [
             "-l", input_file,
             "-severity", options.severity,
             "-rl", str(rl),
-            "-je", nuclei_json,
-            "-o", nuclei_txt,
+            "-jsonl", "-o", nuclei_json,
             "-c", str(conc),
-        ]
+            "-bs", str(effective_bulk),
+        ] + no_interactsh_flag
 
     # Template selection
     if options.templates:
@@ -551,15 +863,6 @@ def phase_nuclei(results_dir, tools, options):
 
     if options.new_templates_only:
         args.append("-nt")
-
-    # Community templates
-    if options.community_templates:
-        tmpl_dir = options.community_templates
-        if os.path.isdir(tmpl_dir):
-            args.extend(["-t", tmpl_dir])
-            pp.info("Including community templates from %s" % tmpl_dir)
-        else:
-            pp.warning("Community templates dir not found: %s" % tmpl_dir)
 
     # Scan strategy
     if options.scan_strategy:
@@ -578,12 +881,36 @@ def phase_nuclei(results_dir, tools, options):
     for h in headers_to_add:
         args.extend(["-H", h])
 
-    retcode, stdout, stderr = run_tool(tools["nuclei"], args, timeout=options.timeout)
+    # Calculate per-run timeout (default templates only).
+    with open(input_file, 'r') as f:
+        target_count = max(sum(1 for line in f if line.strip()), 1)
 
-    if retcode != 0 and retcode != -1:
+    # Stealth: slow rate/concurrency means much more time needed per host.
+    # Non-stealth: ~7 min/host is sufficient at full speed.
+    per_host_minutes = 35 if options.stealth else 7
+
+    nuclei_timeout = max(target_count * per_host_minutes * 60, options.timeout)
+    pp.info("Nuclei timeout: %ds (~%dm) for %d targets (default templates)" % (
+        nuclei_timeout, nuclei_timeout // 60, target_count))
+
+    retcode, stdout, stderr = run_tool(tools["nuclei"], args, timeout=nuclei_timeout)
+
+    if retcode == -1:
+        pp.warning("nuclei timed out after %ds — partial results may still be available" % nuclei_timeout)
+    elif retcode != 0:
         pp.warning("nuclei exited with code %d" % retcode)
 
-    # Display findings
+    # --- Community templates: run in batches to avoid socket/fd exhaustion ---
+    # Passing 80K+ templates in one nuclei invocation causes goroutine explosion
+    # (15K+ open sockets → futex deadlock). Batching at ~2000 templates/run
+    # keeps the fd count manageable while still covering all templates.
+    if options.community_templates and os.path.isdir(options.community_templates):
+        _run_nuclei_community_batched(
+            tools["nuclei"], input_file, options.community_templates,
+            nuclei_json, args, nuclei_timeout, target_count, options
+        )
+
+    # Display findings (JSONL written incrementally, so partial results survive timeout)
     findings = []
     if os.path.exists(nuclei_json):
         with open(nuclei_json, 'r') as f:
@@ -668,8 +995,8 @@ def phase_notify(results_dir, tools, options):
         pp.warning("notify tool not available, skipping notifications")
         return
 
-    nuclei_txt = os.path.join(results_dir, "nuclei_output.txt")
-    if not os.path.exists(nuclei_txt) or os.path.getsize(nuclei_txt) == 0:
+    nuclei_json = os.path.join(results_dir, "nuclei_output.json")
+    if not os.path.exists(nuclei_json) or os.path.getsize(nuclei_json) == 0:
         pp.info("No findings to notify about")
         return
 
@@ -680,7 +1007,7 @@ def phase_notify(results_dir, tools, options):
     args = [
         "-pc", NOTIFY_CONFIG,
         "-bulk",
-        "-data", nuclei_txt,
+        "-data", nuclei_json,
     ]
 
     retcode, stdout, stderr = run_tool(notify_path, args, timeout=60)
@@ -872,10 +1199,11 @@ def generate_html_report(results_dir, domain, start_time, end_time):
     for finding in findings:
         sev = finding.get("info", {}).get("severity", "info").lower()
         color = severity_colors.get(sev, "#6c757d")
-        name = finding.get("info", {}).get("name", "")
+        name = html.escape(finding.get("info", {}).get("name", ""))
         matched = finding.get("matched-at", "")
-        template_id = finding.get("template-id", "")
-        desc = finding.get("info", {}).get("description", "")[:200]
+        matched_escaped = html.escape(matched)
+        template_id = html.escape(finding.get("template-id", ""))
+        desc = html.escape(finding.get("info", {}).get("description", "")[:200])
         rows += (
             "<tr>"
             "<td style='color:%s;font-weight:bold'>%s</td>"
@@ -883,7 +1211,7 @@ def generate_html_report(results_dir, domain, start_time, end_time):
             "<td><a href='%s'>%s</a></td>"
             "<td>%s</td>"
             "<td>%s</td>"
-            "</tr>\n" % (color, sev.upper(), name, matched, matched, template_id, desc)
+            "</tr>\n" % (color, sev.upper(), name, matched_escaped, matched_escaped, template_id, desc)
         )
 
     html = """<!DOCTYPE html>
@@ -920,9 +1248,33 @@ a:hover { text-decoration: underline; }
     pp.info("HTML report written to %s" % report_html)
 
 
+# === Privilege Escalation ===
+def escalate_privileges():
+    """Re-exec as root via sudo if not already elevated, preserving user env."""
+    if os.geteuid() == 0:
+        return
+
+    pp.warning("Root privileges required. Re-launching with sudo...")
+
+    # Preserve the original user's HOME, GOPATH, and PATH so all data
+    # (Go SDK, tool binaries, configs) stays in the user's directories.
+    preserve_vars = ["HOME", "GOPATH", "PATH", "USER", "LOGNAME", "TERM"]
+    preserve_arg = ",".join(v for v in preserve_vars if os.environ.get(v))
+
+    cmd = ["sudo", "--preserve-env=%s" % preserve_arg, "--"] + [sys.executable] + sys.argv
+
+    try:
+        os.execvp("sudo", cmd)
+    except OSError as e:
+        pp.error("Failed to escalate privileges: %s" % e)
+        sys.exit(1)
+
+
 # === Main ===
 def main():
     global verbose
+
+    escalate_privileges()
 
     banner = """
  ███╗   ██╗██╗   ██╗ ██████╗██╗     ███████╗██╗    ██████╗ ██╗██████╗ ███████╗
@@ -1058,8 +1410,8 @@ def main():
         tools["cent"] = ensure_optional_tool("cent")
         # Pull community templates if cent is available and dir doesn't exist
         if tools.get("cent") and not os.path.isdir(options.community_templates):
-            pp.status("Pulling community templates via cent...")
-            run_tool(tools["cent"], ["-p", options.community_templates], timeout=300)
+            pp.status("Pulling community templates via cent (first run — may take a few minutes)...")
+            run_tool(tools["cent"], ["-p", options.community_templates], timeout=600)
     if options.notify:
         tools["notify"] = ensure_optional_tool("notify")
 
@@ -1103,6 +1455,26 @@ def main():
     total = str(etime - ctime).split('.')[0]
     pp.status("Scan completed in: %s" % total)
     pp.status("All results saved to: %s" % results_dir)
+
+    # Fix ownership: running as root creates files owned by root, but the
+    # results should be accessible by the original user.
+    _fix_ownership(results_dir)
+    if options.community_templates and os.path.isdir(options.community_templates):
+        _fix_ownership(options.community_templates)
+
+
+def _fix_ownership(path):
+    """Recursively chown a path back to the real (non-root) user."""
+    real_user = os.environ.get("SUDO_USER") or os.environ.get("USER")
+    if not real_user or real_user == "root" or os.geteuid() != 0:
+        return
+    try:
+        subprocess.run(
+            ["chown", "-R", "%s:%s" % (real_user, real_user), path],
+            capture_output=True, timeout=30,
+        )
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
